@@ -240,3 +240,76 @@ SHA256 与全部解析都基于这份字节，之后不再从源路径打开文�
 - 不含当前时间、机器绝对路径、耗时等随运行变化字段；同一工作簿重跑到两个
   新目录，两份输出分别字节一致。改变列序、行序、字符串池或工作表部件排列
   不改变 CSV 业务内容，审计坐标与原文摘要如实变化。
+
+# 脱敏建仓与发布口径（deid，schema_version=1）
+
+合作研究不能直接领取密封件台账：新增两个独立离线入口，先把台账与全部决策
+固化进一个 SQLite 仓库（build），再从仓库快照发布只含泛化结果的全新
+SQLite（publish）。入口
+`python3 -m repair_survival.deid build --source CSV --tree TREE.json
+--as-of 日 --k N --warehouse WH.db` 与
+`python3 -m repair_survival.deid publish --warehouse WH.db --output OUT.db`；
+对应 Python 调用 `repair_survival.deid.build_warehouse(source, tree,
+as_of, k, warehouse)` 与 `repair_survival.deid.publish(warehouse, output)`。
+仅用标准库与 SQLite；不改变 subjects/estimate/report/cli/competing/
+uncertainty/workbook 的行为与输出。
+
+## 输入（沿用原日期、身份和截止语义）
+
+- CSV 仍为精确四列表头 asset_id,cohort,installed,failed，UTF-8；严格
+  YYYY-MM-DD 日期、空必填字段、参差记录、重复设备、故障早于安装均整次
+  拒绝，与 subjects 完全一致。installed 晚于 as_of 排除并列明
+  （reason=not_installed_by_cutoff）；截止前及当天故障算事件（failed=1），
+  未来故障或空故障右删失（failed=0）。全部排除时整次失败。
+- k 为整数且 >=2（布尔、字符串、小数拒绝）。
+- cohort 树为单个 JSON 对象：{"name": 非空字符串, "children": [...]}，
+  无 children 为叶子；对象键不允许重复，全树节点名唯一。叶子集合必须
+  精确等于输入 CSV 全部数据行的 cohort 集合（含被截止排除的行），多了
+  少了都整次拒绝。
+
+## 披露规则（指定规则，不保证匿名）
+
+- 切面：选覆盖全部叶子的树切面，每片叶子映射到唯一入选祖先（可为其
+  自身）；泛化批型即入选祖先名。安装时间桶全局统一三选一：月
+  （YYYY-MM，级别 0）、年（YYYY，级别 1）、*（级别 2）。
+- 每个 泛化批型×时间桶 组须 n>=k 且故障与未故障并存，否则整组抑制
+  （reason=below_k / no_failure_variance / below_k+no_failure_variance）。
+- 全局按字典序最小化：（1）抑制人数；（2）保留行的泛化距离总和，每行
+  距离=叶到入选祖先的树边数+日期级别（0/1/2）；（3）日期级别；
+  （4）按叶排序的叶->祖先映射序列。
+- 寻优用树上动态规划，不枚举全部切面：目标对子树可加，每节点只需比较
+  “在此泛化”与“向下展开”，子树最优的组合即全局最优。仓库 dp_nodes 表
+  保存每级别每节点两分支的（抑制, 距离）与选择，dp_levels 表保存每级别
+  最优值，meta.optimality 记录上述依据，供独立复核。
+- 这只是指定披露规则的执行，不保证匿名：重识别、链接攻击与背景知识风险
+  未评估（meta.disclaimer 同样载明）。
+
+## 仓库（build 产物，含原文与逐人决策，不对外发布）
+
+meta（模式、版本、k、as_of、级别、源/树路径与 SHA256、目标值、规则与
+免责文本）、raw_lines（CSV 与树的逐行原文）、tree_nodes、input_rows
+（逐行 asset_id/cohort/installed/failed 原文与 included/excluded 决策、
+原因、事件布尔）、dp_nodes/dp_levels（最优性依据）、plan（叶->祖先与
+边数）、disclosure_groups（组计数与 released/suppressed 决策及原因）、
+release_rows（逐行泛化结果与处置）。建仓先完成全部校验与计算，再写入
+目标同目录临时文件并原子替换；任何失败保留旧仓库，修正后可直接重跑。
+
+## 发布物（publish 产物）
+
+- publish 只在单个只读事务中读取仓库一个快照，并重算校验：计划确实是
+  覆盖全部叶子的切面、组决策与逐行处置、目标值与 meta 一致；不一致或
+  文件损坏则失败。源 CSV/树移走后仍可正常发布。
+- 另建全新 SQLite（不复制原库页、不 ATTACH）：仅一个 devices 表，恰为
+  （cohort 泛化批型, installed_bucket 安装时间桶, failed 故障布尔 0/1）
+  三列，一设备一行、重复元组不去重；不含 ID、精确日期、原文与逐人审计。
+- 行按 （cohort, installed_bucket, failed) 排序写入；同一仓库快照重复
+  发布字节一致。发布经目标同目录临时文件原子替换；失败保留旧目标。
+
+## 合成例（fixtures/deid.csv + fixtures/deid_tree.json）
+
+k=2、as_of=2026-01-31：seal-A、seal-B 各两台（一月装、一故障一删失），
+seal-X1/seal-X2 各一台（一故障一删失），B3 二月安装排除。最优为级别 0、
+切面 {seal-A, seal-B, seal-X}（X1/X2 单台不足 k，上泛到 seal-X 后组内
+2 台且有故障/未故障）：抑制 0、距离 2。发布 6 行：(seal-A|seal-B|seal-X,
+2026-01, 0/1)。若选叶级切面则 X1/X2 两组各 1 台被抑制（抑制 2），若选根
+切面则距离升至 8，均非最优。

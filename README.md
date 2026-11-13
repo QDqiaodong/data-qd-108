@@ -71,6 +71,27 @@ confidence_level=0.95)`；口径与字段见 docs/contract.md。
 生成(原创、确定性、无真实台账);适配器与生成器仅用 Python 3.11+ 标准库,不调用
 Excel/LibreOffice、不启动浏览器、不联网,不执行宏或计算公式。
 
+## 合作研究脱敏建仓与发布（独立入口，schema_version=1）
+
+合作研究不能直接领取密封件台账。新增两个独立离线入口：build 把四列台账、
+as-of、整数 k>=2 与单根 cohort 树（叶子精确对应输入批型）固化为一个 SQLite
+仓库，保存原文、来源、纳入/排除与披露决策；publish 只读一个仓库快照，另建
+全新 SQLite，仅含泛化批型、安装时间桶、故障布尔值，一设备一行、重复元组
+不去重。日期、身份与截止语义沿用原四列输入。
+
+```sh
+.venv/bin/python -m repair_survival.deid build --source fixtures/deid.csv --tree fixtures/deid_tree.json --as-of 2026-01-31 --k 2 --warehouse run/deid-warehouse.db
+.venv/bin/python -m repair_survival.deid publish --warehouse run/deid-warehouse.db --output run/deid-release.db
+```
+
+每个 泛化批型×时间桶 组须至少 k 台且故障/未故障并存，否则整组抑制；全局
+按（抑制人数, 保留行距离和=树边数+日期级别, 日期级别, 排序叶映射）字典序
+最小化，树上动态规划寻优（不枚举全部切面），仓内 dp_nodes/dp_levels 保留
+最优性依据。合成例中 seal-X1/seal-X2 单台不足 k=2，上泛到 seal-X 后放行：
+抑制 0、距离 2、级别 0（月），发布 6 行。这只是指定披露规则，不保证匿名。
+建仓、发布各自失败保留旧目标；发布确定性，源移走仍可发布。口径与仓库/发布
+物结构见 docs/contract.md「脱敏建仓与发布口径」。
+
 ## 安装与运行
 
 要求 Python 3.11 或更高；先确认 `python3 --version`。以下命令在仓库根目录执行：
@@ -90,9 +111,9 @@ CLI 参数错误或无效数据返回非零；失败原因打印到 stderr。
 
 ## 目录
 
-- `src/repair_survival/`：解析、业务转换及命令行入口（含竞争退出口径 competing、KM 不确定性口径 uncertainty、离线工作簿采集 workbook）。
+- `src/repair_survival/`：解析、业务转换及命令行入口（含竞争退出口径 competing、KM 不确定性口径 uncertainty、离线工作簿采集 workbook、脱敏建仓与发布 deid）。
 - `scripts/`：确定性合成 xlsx 台账生成脚本（原创合成数据，可重复运行）。
-- `fixtures/`：MIT 许可的合成输入（assets.csv 寿命删失、competing.csv 竞争退出、uncertainty.csv 不确定性样例）；来源声明见 DATA-SOURCES.md。
+- `fixtures/`：MIT 许可的合成输入（assets.csv 寿命删失、competing.csv 竞争退出、uncertainty.csv 不确定性样例、deid.csv 与 deid_tree.json 脱敏建仓样例）；来源声明见 DATA-SOURCES.md。
 - `docs/contract.md`：字段和口径、边界及失败约定。
 - `tests/`：业务结果、边界与失败测试。
 - `requirements*.lock`、`pyproject.toml`：环境和构建声明。

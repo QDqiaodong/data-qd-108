@@ -1,0 +1,8 @@
+{
+  "name": "seal",
+  "children": [
+    {"name": "seal-A"},
+    {"name": "seal-B"},
+    {"name": "seal-X", "children": [{"name": "seal-X1"}, {"name": "seal-X2"}]}
+  ]
+}
