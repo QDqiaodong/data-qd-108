@@ -1,0 +1,11 @@
+asset_id,cohort,installed,observed_from,exit_date,exit_kind
+A,seal-C,2026-01-01,2026-01-01,2026-01-03,failure
+B,seal-C,2026-01-01,2026-01-01,2026-01-05,replacement
+C,seal-C,2026-01-01,2026-01-01,,
+D,seal-C,2026-01-01,2026-01-04,2026-01-07,failure
+E,seal-C,2026-01-01,2026-01-05,,
+F,seal-Z,2026-01-02,2026-01-02,2026-01-06,replacement
+G,seal-Z,2026-01-01,2026-01-03,,
+H,seal-Z,2026-01-09,2026-01-09,,
+I,seal-Z,2026-01-01,2026-01-08,,
+J,seal-Y,2026-01-01,2026-01-02,2026-01-10,failure

@@ -16,3 +16,78 @@ RMST 为从0到统一 horizon 的生存曲线面积，单位设备日；horizon 
 JSON 包含纳入个体、排除清单、每组风险表/事件/删失/生存曲线和 RMST。
 全量确定性计算，验证后原子替换单个 JSON；失败不改已有报告。
 不提供置信区间、显著性检验、因果解释、复发事件、协变量或迟到数据重算。
+
+# 延迟进入竞争风险口径（schema_version=2）
+
+入口 `python3 -m repair_survival.competing --source CSV --as-of 日 --horizon N --output JSON`；
+对应 Python 调用 `repair_survival.competing.analyze(source, as_of, horizon, output)`。
+估计的是现有预防性更换策略下，指定使用年龄前失效与更换两种竞争退出的
+累计概率及限制平均在役时间；不是取消更换后的因果失效风险。
+
+## 输入契约
+
+UTF-8 CSV，有序表头精确为 asset_id,cohort,installed,observed_from,
+exit_date,exit_kind。asset_id 全文件唯一；asset_id 与 cohort 非空且无
+首尾空白。日期严格 YYYY-MM-DD。observed_from 为开始监测当天密封件仍在
+使用，不得早于 installed。exit_date 与 exit_kind 同时为空或同时非空；
+exit_kind 仅 failure（首次失效）或 replacement（失效前更换）。显式退出
+不得早于 observed_from，允许同日进入与退出。每台设备仅一个原密封件
+周期，更换后不建立第二周期。重复设备、未知类型、缺列、多列、参差记录、
+非法日期关系均整次拒绝，包括后来会因截止日被排除的行。
+
+## 截止日转换
+
+as_of 包含当天。installed 晚于截止日排除为 not_installed_by_cutoff；
+其余 observed_from 晚于截止日排除为 not_enrolled_by_cutoff。已纳入设备
+声明退出在截止日或以前时按其类型；退出在未来或未声明时行政右删失于
+截止日，censor_reason 分别为 exit_after_cutoff / no_declared_exit，
+声明日期与类型保留在 declared_exit_* 字段。全部设备被排除时整次失败。
+分析时间轴始终是距安装日的自然日年龄：进入年龄 e=observed_from-installed，
+有效退出年龄 x=有效退出日-installed，不从监测日重计寿命。horizon 为正
+整数年龄日；Python 调用中布尔值不算整数。
+
+## 估计算法
+
+每 cohort 独立。年龄 t 先加入 e=t 的设备，再取风险集 Y(t)={e<=t<=x}；
+当日失效、更换、删失共享退出前完整风险集 n。两类事件使用同一个事件前
+在役概率 S_prev：F_failure += S_prev*d_f/n，F_replacement += S_prev*d_r/n，
+S *= 1-(d_f+d_r)/n，随后移除当日退出者。删失不增加任何累计概率。初始
+S=1、两类 F 为 0，零日事件同样处理。凡估计有定义时 S+F_failure+
+F_replacement 精确等于 1。不做两个 KM 取补，也不把另一原因当普通删失。
+在役 RMST 为 0 到 horizon 的右连续 S 阶梯面积（日）；horizon 当天事件
+计入端点概率但不产生额外正长度面积；horizon 不是新的观测截止日，不
+伪造当天行政删失。算法只扫描真实年龄边界，不逐日展开。
+
+## 观测支持
+
+检查 0、进入、退出年龄与 horizon 形成的相邻边界区间。边界完成当日退出
+后，若某正长度区间内无在风险设备且当前 S>0，则该 cohort 自该区间起不
+可估计：记录首个空档起止年龄与 support_end_day，保留此前可信概率前缀；
+后续再进入不能恢复、不重新归一化、不跨空档连接。无年龄零支持标记
+no_baseline_support，前缀后失去支持标记 risk_set_gap。horizon 越过缺口
+时三项概率与完整 RMST 为 null（不是 0）；这是数据支持不足，CLI 仍成功
+输出诊断，其他 cohort 照常分析。S 精确归 0 后零在役尾部不算缺口，可
+积分到 horizon；最后删失恰在 horizon 时此前区间仍有支持，不算失败。
+
+## 输出结构（schema_version=2，mode=delayed_entry_competing_risks）
+
+- parameters：as_of、horizon_days、source_sha256（输入原始字节，只捕获一次）。
+- devices：全部设备的 record（从 1 计，表头不计）、声明退出、转换结果
+  （entry_age_days、exit_age_days、exit_kind、censor_reason）或排除原因。
+- cohorts[name]：status、subjects、support_end_day、gap、prefix（截至
+  support_end_day 的可信概率与 RMST）、horizon（端点三项概率与 RMST，
+  不可估计时为 null）、risk_table。
+- risk_table 覆盖 0、horizon 及区间内全部进入、退出边界；节点列出
+  entered、at_risk（完整风险集 ID 与计数）、failures/replacements/
+  censored（ID 与计数）、at_risk_after 及三项概率；失去支持后的节点
+  仍给原始成员与计数，概率字段为 null 且不继续累积。
+- 每个有效概率及 RMST 同时输出规范约分数字符串 fraction 与有限浮点
+  展示值 value；value 不参与计算，中间递推不经过 float。
+
+## 假设与限制
+
+行政删失与延迟进入需与两种退出风险独立（非信息性删失/进入）；纳入监测
+前未观测到的退出不进入本分析。更换概率依赖现行维护策略，策略改变后的
+失效风险不可由本报告直接推出。不提供置信区间、显著性检验或真实安全、
+保修结论。同一输入字节与参数产生字节一致 JSON；先完成校验、计算、
+序列化，再经同目录临时文件原子替换；失败保留旧报告，修正后可直接重跑。
