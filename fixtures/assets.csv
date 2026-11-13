@@ -1,0 +1,8 @@
+asset_id,cohort,installed,failed
+A1,seal-A,2026-01-01,2026-01-03
+A2,seal-A,2026-01-01,2026-01-06
+A3,seal-A,2026-01-06,
+A4,seal-A,2026-01-01,
+B1,seal-B,2026-01-01,
+B2,seal-B,2026-01-01,2026-01-15
+F1,seal-B,2026-02-01,
