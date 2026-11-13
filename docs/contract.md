@@ -17,6 +17,67 @@ JSON 包含纳入个体、排除清单、每组风险表/事件/删失/生存曲
 全量确定性计算，验证后原子替换单个 JSON；失败不改已有报告。
 不提供置信区间、显著性检验、因果解释、复发事件、协变量或迟到数据重算。
 
+# KM 不确定性报告口径（独立入口，schema_version=1）
+
+入口 `python -m repair_survival.uncertainty --source CSV --as-of 日
+--horizon N --confidence-level C --output JSON`；对应 Python 调用
+`repair_survival.uncertainty.analyze(source, as_of, horizon, output,
+confidence_level=0.95)`，另有只构建报告 dict 的 `build_report(...)`。
+输入仍为精确四列表头 asset_id,cohort,installed,failed，沿用严格日期、
+重复身份、截止日与未来安装排除规则；每份源文件只读取一次原始字节，
+解析与 SHA256 来自同一份字节。不改变 subjects/estimate/report/cli 的
+行为、返回值与原有输出字段（原报告无 schema_version 字段，保持不变）。
+
+## 参数与置信水平
+
+horizon 为正整数日（布尔值不算整数）。confidence-level 为十进制数，
+接受 [0.80, 0.99] 含边界，默认 0.95；NaN、Infinity、布尔值、字符串及
+范围外值拒绝。双侧标准正态分位数由标准库 math.erf 二分求逆实现，
+不硬编码特定置信水平常数，精度优于 1e-12。
+
+## 逐节点 Greenwood 与 log(-log S) 区间
+
+事件年龄 t_j 取事件前完整风险人数 Y_j 与同龄事件数 d_j；并列故障作为
+同龄 d_j 处理，删失共享事件前 Y_j 但不进入分子。Greenwood 累计项
+G(t)=Σ d_j/[Y_j(Y_j-d_j)]，生存率与风险集成员沿用既有 KM 口径。
+当 0<Ŝ(t)<1 且 G(t) 有限，采用 W=log(-log Ŝ) 的双侧正态区间
+W ± z·sqrt(G)，反向变换 exp(-exp(·))（单调递减，注意上下界交换），
+裁剪到 [0,1]，边界严格有序；不得用正态区间直接裁剪替代。退化情形：
+Ŝ=1 且 G=0 时区间 [1,1]（method=degenerate_one）；Ŝ=0 时区间
+[0,0]（method=degenerate_zero）。Y_j=d_j 使后续 G 不再有限：该节点
+起 greenwood_cumulative 为 null，Ŝ=0 的区间仍给 [0,0]。所有区间均为
+逐点置信区间（interval_type=pointwise），不是全曲线同时置信带。
+
+## RMST 方差与区间
+
+RMST 点值为既有右连续 KM 曲线 0 到 horizon 的面积，口径与原逻辑一致。
+对每个事件时点 t_j<horizon，令 A_j 为 t_j 到 horizon 的 KM 曲线面积，
+Var(RMST)=Σ A_j²·d_j/[Y_j(Y_j-d_j)]；事件恰在 horizon 时 A_j=0，
+不改变方差。区间为 RMST ± z·SE 的正态近似，截断到 [0,horizon]。
+若任一正面积项发生 Y_j=d_j，方差不可由该公式有限估计：RMST 点值仍
+输出，variance/standard_error/interval 为 null，
+status=reason=greenwood_singular，不跳过事件也不误报零方差。观测支持
+缺口（risk_set_gap / no_baseline_support）使 horizon RMST 不可估计时，
+rmst_days 与区间同为 null 并沿用对应 reason；这是正常诊断，命令成功。
+零日事件按原项目约定处理并接受同样奇异判断。
+
+## 输出结构、序列化与失败约定
+
+报告含 schema_version=1、mode=kaplan_meier_uncertainty、parameters
+（as_of、horizon_days、confidence_level、source_sha256）、排除清单、
+interpretation（逐点而非同时带、变换公式、无因果解释、仅合成分析）与
+cohorts。每 cohort 给 status、support_end_day、gap、与旧 estimate 完全
+一致的 km 点估计块、覆盖 0/horizon 及全部事件删失边界的 risk_table
+（逐节点列年龄、entered/at_risk/failures/censored 成员与计数、
+at_risk_after、事件后 KM 点值 fraction+value、Greenwood 单项与累计、
+区间端点与 method），以及 horizon 摘要（RMST 点值、方差、标准误、
+区间端点、status、reason）。精确量以 Fraction 递推并输出规范约分
+fraction 与浮点 value；浮点不参与计算，allow_nan=False 保证不出现
+NaN/Infinity。无当前时间、绝对路径等随运行变化字段，同参数字节一致。
+先完成校验、分析与序列化，再经输出同目录临时文件原子替换；缺失源、
+坏日期、非法置信水平、契约失败、写入或替换失败返回非零并清理临时
+文件，已有报告保持完整，修正后可直接重跑。
+
 # 延迟进入竞争风险口径（schema_version=2）
 
 入口 `python3 -m repair_survival.competing --source CSV --as-of 日 --horizon N --output JSON`；
