@@ -152,3 +152,91 @@ no_baseline_support，前缀后失去支持标记 risk_set_gap。horizon 越过�
 失效风险不可由本报告直接推出。不提供置信区间、显著性检验或真实安全、
 保修结论。同一输入字节与参数产生字节一致 JSON；先完成校验、计算、
 序列化，再经同目录临时文件原子替换；失败保留旧报告，修正后可直接重跑。
+
+# 离线工作簿采集口径（workbook_collection，schema_version=1）
+
+入口 `python -m repair_survival.workbook --source FILE.xlsx --output-dir DIR`；
+对应 Python 调用 `repair_survival.workbook.collect(source, output_dir)`，
+另有只构建审计 dict 的 `build_collection(file_bytes)` 与 `load_collection(source)`。
+本口径只做上游采集与关联校验：不计算生存曲线、竞争风险、RMST 或置信区间，
+不接受 as-of 参数，也不因“未来”日期过滤台账。源文件字节只读取一次，
+SHA256 与全部解析都基于这份字节，之后不再从源路径打开文件。
+
+## 支持范围与包定位
+
+- 仅支持文档化的普通 OOXML `.xlsx`（zip 容器）；拒绝 `.xls`、非 zip 的加密
+  文件、损坏包、缺失必需部件、含 DOCTYPE 的 XML 与宏启用工作簿；不执行宏、
+  公式或任何计算。
+- 通过 `xl/workbook.xml` 与其关系文件定位名称**恰为** `Assets`、`Faults` 的两个
+  worksheet，不假定 sheet1.xml/sheet2.xml，不按工作表顺序猜角色；允许其他
+  工作表（审计标记 role=ignored，不参与采集）。引用部件必须包内实际存在且
+  唯一，内容类型必须是 worksheet；外部关系（TargetMode=External）不跟随。
+- 日期纪元按 `workbookPr.date1904` 选择，缺失按 1900 制。
+
+## 表头、数据行与真实坐标
+
+- 两张表第 1 行是表头，按表头文本匹配列，不按固定列号，列序可交换。
+  Assets 必需 `asset_id,cohort,installed`；Faults 必需
+  `ticket_id,asset_id,failed_on,status`。允许额外列；每个非空表头必须唯一，
+  必需表头缺失或重复整次拒绝。
+- 只处理任一必需字段有内容的数据行；必需字段全空的行忽略，只有样式、批注或
+  额外列内容的行不创造记录。样式表尾行与 worksheet `dimension` 不能代替真实
+  单元格扫描；隐藏行、筛选隐藏行仍是事实，照常采集。Assets 至少一条，
+  Faults 允许没有数据行。
+- 单元格按真实 `r` 坐标定位：稀疏缺失不把后列左移；拒绝同一工作表重复坐标、
+  坐标与所在 `row r` 不一致、以及实际使用区域内覆盖必需列的合并单元格。
+- 支持 sharedStrings 与 inlineStr 的普通文本和富文本；富文本按正文文本段
+  顺序连接并保留原文，`rPh` 注音节点与 XML 缩进不混入。字符串池索引、
+  worksheet 部件位置与单元格地址在审计中保持关联。不用显示格式猜业务身份。
+
+## 字段类型与身份
+
+- `asset_id,ticket_id,cohort,status` 只接受文本单元格，非空且无首尾空白，
+  大小写敏感。文本 `0007` 与 `7` 是不同设备；数值单元格 7 即使带 `0000`
+  数字格式也拒绝。`status` 精确为 `CONFIRMED` 或 `CANCELLED`。
+- 必需字段出现公式一律拒绝，即使有看似合法的缓存值；布尔、错误单元格及
+  不支持类型拒绝。未映射的额外列可以含公式，不计算也不影响合法采集。
+- `installed,failed_on` 接受：严格 `YYYY-MM-DD` 文本；严格 OOXML 日期单元格；
+  或数值单元格中的整数 Excel 序列。数值字符串可含小数点但必须精确为整数，
+  不经 float、不四舍五入；分数日、指数、正号等写法拒绝。日期有效性不依据
+  单元格 numFmt。
+
+## 日期序列规则
+
+- 1900 制：序列 1 = 1900-01-01，59 = 1900-02-28；60 是 Excel 虚构的
+  1900-02-29，必须拒绝；61 = 1900-03-01。拒绝负序列与 0。
+- 1904 制：序列 0 = 1904-01-01；拒绝负序列。两种日期制都拒绝超出
+  `datetime.date` 范围的值。
+
+## 关联校验与最早故障选择
+
+- Assets 中 `asset_id` 唯一；Faults 中 `ticket_id` 全表唯一，同 ID 重复即使
+  内容相同也拒绝。每张工单必须引用已登记设备；`failed_on` 不得早于该设备
+  `installed`；CANCELLED 记录同样先完成这些校验。
+- 对每台设备，只从 CONFIRMED 工单选择最早 `failed_on`；日期并列时按
+  `ticket_id` 原文 Unicode 码点顺序选一张作为规范依据。其他确认工单与取消
+  工单保留在审计中并记录未选中原因
+  （selected_earliest_confirmed / confirmed_same_date_lost_ticket_id_order /
+  confirmed_later_than_selected / cancelled_not_eligible）。
+- 没有确认工单的设备输出空 `failed`，不伪造截止日。清册只描述每台设备原
+  密封件周期，不从工单推断更换或第二周期，不把预防性更换混成普通删失。
+
+## 输出、发布与失败约定
+
+- 输出目录原先必须不存在，已有目录拒绝覆盖。两份产物先写入目标同目录的
+  私有暂存目录，全部成功后一次 `os.replace` 原子发布为目录；输入/OOXML/
+  字段/关联错误或写入失败均非零退出并清理本次暂存，不发布只有 CSV 或只有
+  审计的半套结果，修正后可直接重跑。
+- `assets.csv`：精确有序表头 `asset_id,cohort,installed,failed`，按
+  `asset_id` 稳定排序，日期规范 ISO，UTF-8 无 BOM，标准 CSV 转义，可直接
+  交给现有 subjects 与旧 CLI，消费者无需改动。
+- `cells.json`（schema_version=1，mode=workbook_collection）：记录工作簿
+  SHA256 与字节数、日期制、workbook 部件与全部工作表角色、字符串池规模、
+  两张表的表头映射（含真实坐标、类型与共享串索引）、全部采集设备及工单
+  （按字段保留 sheet 名、真实坐标、原始类型/文本或数字令牌、规范值）、每台
+  设备的候选确认工单、选中 ticket_id 与逐票处置理由。缺失字段保留预期坐标
+  且 raw=null，不移配相邻单元格。该文件足以核对转写与最早故障选择，但不
+  宣称保存了原工作簿全文或证明台账真实。
+- 不含当前时间、机器绝对路径、耗时等随运行变化字段；同一工作簿重跑到两个
+  新目录，两份输出分别字节一致。改变列序、行序、字符串池或工作表部件排列
+  不改变 CSV 业务内容，审计坐标与原文摘要如实变化。

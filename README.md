@@ -51,6 +51,26 @@ risk_set_gap/no_baseline_support。统计支持不足与方差奇异是成功输
 `repair_survival.uncertainty.analyze(source, as_of, horizon, output,
 confidence_level=0.95)`；口径与字段见 docs/contract.md。
 
+## 离线工作簿采集适配器（xlsx → 原四列输入）
+
+维修人员提交的是 Excel 维护台账而不是四列 CSV：设备编号可能带前导零、日期
+可能是 Excel 序列值、故障工单在另一张工作表。新增离线适配器把名称恰为
+`Assets`、`Faults` 的两张清册采集为原有输入,并产出可逐单元格复核的审计。
+它只做上游采集与关联校验,不计算或扩展生存曲线、竞争风险、RMST 或置信区间。
+
+```sh
+.venv/bin/python -m repair_survival.workbook --source fixtures-ish/ledger.xlsx --output-dir run/ledger
+# run/ledger/assets.csv  精确表头 asset_id,cohort,installed,failed,可直接交给旧 CLI
+# run/ledger/cells.json  SHA256、日期制、部件/表头映射、逐单元格原文令牌与选择理由
+```
+
+对应 Python 调用为 `repair_survival.workbook.collect(source, output_dir)` 与只构建
+审计 dict 的 `repair_survival.workbook.build_collection(file_bytes)` /
+`load_collection(source)`。支持范围与口径见 docs/contract.md「工作簿采集口径」。
+合成台账由 `python3 scripts/generate_workbook_fixtures.py --output-dir DIR` 可重复
+生成(原创、确定性、无真实台账);适配器与生成器仅用 Python 3.11+ 标准库,不调用
+Excel/LibreOffice、不启动浏览器、不联网,不执行宏或计算公式。
+
 ## 安装与运行
 
 要求 Python 3.11 或更高；先确认 `python3 --version`。以下命令在仓库根目录执行：
@@ -70,7 +90,8 @@ CLI 参数错误或无效数据返回非零；失败原因打印到 stderr。
 
 ## 目录
 
-- `src/repair_survival/`：解析、业务转换及命令行入口（含竞争退出口径 competing、KM 不确定性口径 uncertainty）。
+- `src/repair_survival/`：解析、业务转换及命令行入口（含竞争退出口径 competing、KM 不确定性口径 uncertainty、离线工作簿采集 workbook）。
+- `scripts/`：确定性合成 xlsx 台账生成脚本（原创合成数据，可重复运行）。
 - `fixtures/`：MIT 许可的合成输入（assets.csv 寿命删失、competing.csv 竞争退出、uncertainty.csv 不确定性样例）；来源声明见 DATA-SOURCES.md。
 - `docs/contract.md`：字段和口径、边界及失败约定。
 - `tests/`：业务结果、边界与失败测试。
